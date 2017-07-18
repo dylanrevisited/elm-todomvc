@@ -19,11 +19,12 @@ import Html.Events exposing (..)
 import Html.Keyed as Keyed
 import Html.Lazy exposing (lazy, lazy2)
 import Json.Decode as Json
+import Json.Encode as Encode
 import String
 import Task
 
 
-main : Program (Maybe Model) Model Msg
+main : Program (Maybe Encode.Value) Model Msg
 main =
     Html.programWithFlags
         { init = init
@@ -33,7 +34,7 @@ main =
         }
 
 
-port setStorage : Model -> Cmd msg
+port setStorage : Encode.Value -> Cmd msg
 
 
 {-| We want to `setStorage` on every update. This function adds the setStorage
@@ -46,20 +47,24 @@ updateWithStorage msg model =
             update msg model
     in
         ( newModel
-        , Cmd.batch [ setStorage newModel, cmds ]
+        , Cmd.batch [ setStorage (modelToValue newModel), cmds ]
         )
 
 
 
 -- MODEL
 
+type Visibility
+    = ShowAll 
+    | ShowCompleted
+    | ShowActive
 
 -- The full application state of our todo app.
 type alias Model =
     { entries : List Entry
     , field : String
     , uid : Int
-    , visibility : String
+    , visibility : Visibility
     }
 
 
@@ -70,11 +75,65 @@ type alias Entry =
     , id : Int
     }
 
+-- Decoders
+modelDecoder : Json.Decoder Model
+modelDecoder =
+  Json.map4 Model
+    (Json.at ["entries"] (Json.list entryDecoder))
+    (Json.at ["field"] Json.string)
+    (Json.at ["uid"] Json.int)
+    (Json.at ["visibility"] Json.string |> Json.andThen visibilityDecoder)
+
+entryDecoder : Json.Decoder Entry
+entryDecoder =
+  Json.map4 Entry
+    (Json.at ["description"] Json.string)
+    (Json.at ["completed"] Json.bool)
+    (Json.at ["editing"] Json.bool)
+    (Json.at ["id"] Json.int)
+
+visibilityDecoder : String -> Json.Decoder Visibility
+visibilityDecoder tag =
+  case tag of
+    "ShowActive" -> Json.succeed ShowActive
+    "ShowAll" -> Json.succeed ShowAll
+    "ShowCompleted" -> Json.succeed ShowCompleted
+    _ -> Json.fail (tag ++ " is not a recognized tag for Visibility")
+
+
+-- Encoders
+modelToValue : Model -> Encode.Value
+modelToValue model =
+  Encode.object
+    [
+      ("entries", Encode.list (List.map entryToValue model.entries)),
+      ("field", Encode.string model.field),
+      ("uid", Encode.int model.uid),
+      ("visibility", visibilityToValue model.visibility)
+    ]
+
+entryToValue : Entry -> Encode.Value
+entryToValue entry =
+  Encode.object
+    [
+      ("description", Encode.string entry.description),
+      ("completed", Encode.bool entry.completed),
+      ("editing", Encode.bool entry.editing),
+      ("id", Encode.int entry.id)
+    ]
+
+visibilityToValue : Visibility -> Encode.Value
+visibilityToValue visibility =
+  case visibility of
+    ShowActive -> Encode.string "ShowActive"
+    ShowAll -> Encode.string "ShowAll"
+    ShowCompleted -> Encode.string "ShowCompleted"
+
 
 emptyModel : Model
 emptyModel =
     { entries = []
-    , visibility = "All"
+    , visibility = ShowAll
     , field = ""
     , uid = 0
     }
@@ -89,10 +148,19 @@ newEntry desc id =
     }
 
 
-init : Maybe Model -> ( Model, Cmd Msg )
+init : Maybe Encode.Value -> ( Model, Cmd Msg )
 init savedModel =
-    Maybe.withDefault emptyModel savedModel ! []
+    case savedModel of 
+    Just value ->
+        Maybe.withDefault emptyModel (Json.decodeValue modelDecoder value |> resultToMaybe) 
+        ! []
+    Nothing -> emptyModel ! []
 
+resultToMaybe : Result String Model -> Maybe Model
+resultToMaybe result =
+  case result of
+    Result.Ok model -> Just model
+    Result.Err error -> Debug.log error Nothing
 
 
 -- UPDATE
@@ -112,7 +180,7 @@ type Msg
     | DeleteComplete
     | Check Int Bool
     | CheckAll Bool
-    | ChangeVisibility String
+    | ChangeVisibility Visibility
 
 
 
@@ -250,18 +318,18 @@ onEnter msg =
 -- VIEW ALL ENTRIES
 
 
-viewEntries : String -> List Entry -> Html Msg
+viewEntries : Visibility -> List Entry -> Html Msg
 viewEntries visibility entries =
     let
         isVisible todo =
             case visibility of
-                "Completed" ->
+                ShowCompleted ->
                     todo.completed
 
-                "Active" ->
+                ShowActive ->
                     not todo.completed
 
-                _ ->
+                ShowAll ->
                     True
 
         allCompleted =
@@ -341,7 +409,7 @@ viewEntry todo =
 -- VIEW CONTROLS AND FOOTER
 
 
-viewControls : String -> List Entry -> Html Msg
+viewControls : Visibility -> List Entry -> Html Msg
 viewControls visibility entries =
     let
         entriesCompleted =
@@ -376,26 +444,32 @@ viewControlsCount entriesLeft =
             ]
 
 
-viewControlsFilters : String -> Html Msg
+viewControlsFilters : Visibility -> Html Msg
 viewControlsFilters visibility =
     ul
         [ class "filters" ]
-        [ visibilitySwap "#/" "All" visibility
+        [ visibilitySwap "#/" ShowAll visibility
         , text " "
-        , visibilitySwap "#/active" "Active" visibility
+        , visibilitySwap "#/active" ShowActive visibility
         , text " "
-        , visibilitySwap "#/completed" "Completed" visibility
+        , visibilitySwap "#/completed" ShowCompleted visibility
         ]
 
 
-visibilitySwap : String -> String -> String -> Html Msg
+visibilitySwap : String -> Visibility -> Visibility -> Html Msg
 visibilitySwap uri visibility actualVisibility =
     li
         [ onClick (ChangeVisibility visibility) ]
         [ a [ href uri, classList [ ( "selected", visibility == actualVisibility ) ] ]
-            [ text visibility ]
+            [ text (visibilityToString visibility) ]
         ]
 
+visibilityToString : Visibility -> String
+visibilityToString visibility =
+    case visibility of 
+        ShowActive -> "ShowActive"
+        ShowAll -> "ShowAll"
+        ShowCompleted -> "ShowCompleted"
 
 viewControlsClear : Int -> Html Msg
 viewControlsClear entriesCompleted =
