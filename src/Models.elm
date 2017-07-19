@@ -1,4 +1,4 @@
-module Model exposing (..)
+module Models exposing (..)
 
 import Json.Decode as Json
 import Json.Encode as Encode
